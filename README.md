@@ -19,11 +19,11 @@ Antigravity 的界面是 Electron + React，**完全没有 i18n 框架**——12
 | 问题 | 本项目 |
 |---|---|
 | 改了字典不生效（watcher 只判断 marker 在不在） | `patch.sha256` 哈希指纹，不一致就重打，另有 `-Force` |
-| 带插值的句子全部漏译（`Shortcut Ctrl+K for Open Conversation Picker`） | 35 条 `DYNAMIC_TEMPLATES` 正则模板 + `trPart()` 片段翻译 |
+| 带插值的句子全部漏译（`Shortcut Ctrl+K for Open Conversation Picker`） | 36 条 `DYNAMIC_TEMPLATES` 正则模板 + `trPart()` 片段翻译 |
 | React 把一句话拆成多个文本节点，译成半中半英 | `translateTextRun()` 合并相邻文本节点后整句查表 |
 | 模型名被误译（`Orchestrator` → 「编排器」） | `MODEL` 白名单自动还原英文 |
 
-最终：**3985 条字典 + 35 条模板**，界面覆盖率约 95%。
+最终：**3985 条字典 + 36 条模板**，界面覆盖率约 95%。
 
 ---
 
@@ -147,7 +147,7 @@ Antigravity 的 `app.asar` 里有 `dist/preload.js`（Electron preload，在页�
 translateText(text)
   ├─ 1. 精确查 dictionary            ← 3985 条静态字典
   ├─ 2. normalize 后再查（trim / 折叠空白 / 处理省略号）
-  └─ 3. 逐条匹配 DYNAMIC_TEMPLATES   ← 35 条正则，捕获组可插值
+  └─ 3. 逐条匹配 DYNAMIC_TEMPLATES   ← 36 条正则，捕获组可插值
      未命中 → 返回 null（不改动原文）
 ```
 
