@@ -1,0 +1,7 @@
+node_modules/
+_hans/
+_asar_preload.js
+*.bak-*
+*.log
+.DS_Store
+Thumbs.db
