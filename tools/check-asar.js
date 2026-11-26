@@ -64,6 +64,7 @@ const dictBody = (data.match(/const dictionary\s*=\s*\{([\s\S]*?)\n\};/) || [])[
 const lines = dictBody.split('\n').filter(l => l.trim());
 console.log('字典条目:', lines.length);
 console.log('动态模板:', (data.match(/regex:\s*\//g) || []).length);
+console.log('原生右键 hook:', data.includes('window:show-context-menu') && data.includes('trMenuItems'));
 
 for (const p of ['\\u667a\\u80fd\\u4f53', 'Hey\\s+([^,]+)', 'translateTextRun']) {
   console.log('probe', p, '->', data.includes(p));

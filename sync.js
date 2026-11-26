@@ -177,6 +177,23 @@ function flatten(obj, out) {
     'Custom Agent Error:': '自定义智能体错误：',
     'MCP Servers': 'MCP 服务器',
     'Add': '添加',
+    // 原生右键菜单项（经 window:show-context-menu IPC 传给主进程构建 Electron 原生菜单）
+    'Mark Unread': '标记为未读',
+    'Mark Read': '标记为已读',
+    'Resolve': '解决',
+    'Return to Inbox': '返回收件箱',
+    'Save As': '另存为',
+    'Print': '打印',
+    'Inspect': '检查',
+    'Translate': '翻译',
+    'Rename Folder': '重命名文件夹',
+    'Move to': '移动到',
+    'Disable': '禁用',
+    'Uninstall': '卸载',
+    'Properties': '属性',
+    // 权限确认对话框选项
+    'Yes, and always allow in this conversation': '是的，并在此对话中始终允许',
+    'Yes, and always allow': '是的，并始终允许',
   };
   let supplemented = 0;
   for (const [k, v] of Object.entries(SUPPLEMENT)) { dict.set(k, v); supplemented++; }
@@ -210,7 +227,55 @@ function flatten(obj, out) {
   const oldDict = pre.match(/const dictionary\s*=\s*\{[\s\S]*?\n\};/)[0];
 
   fs.writeFileSync(PRELOAD + '.bak-' + Date.now(), pre, 'utf8');
-  fs.writeFileSync(PRELOAD, pre.replace(oldDict, newDict), 'utf8');
+  let out = pre.replace(oldDict, newDict);
+
+  // 原生右键菜单翻译 hook（幂等注入）
+  // 渲染进程通过 window.electronNative.showContextMenu(items) → ipcRenderer.invoke
+  // ('window:show-context-menu', items) 把菜单模板交给主进程构建 Electron 原生菜单。
+  // DOM 注入够不着原生菜单，必须在 preload 层 hook IPC，递归翻译 items[].label。
+  if (out.indexOf('window:show-context-menu') < 0) {
+    const anchor = '  // 13. Global CommonJS Exports for testing';
+    if (out.indexOf(anchor) >= 0) {
+      const hook = [
+        '  // 13.5 Native context menu translation (Electron native menu)',
+        '  (function () {',
+        '    try {',
+        '      if (typeof electron_1 === \'undefined\' || !electron_1.ipcRenderer ||',
+        '          typeof electron_1.ipcRenderer.invoke !== \'function\') return;',
+        '      const origInvoke = electron_1.ipcRenderer.invoke.bind(electron_1.ipcRenderer);',
+        '      function trMenuItems(items, depth) {',
+        '        if (!Array.isArray(items) || depth > 8) return;',
+        '        for (const it of items) {',
+        '          if (!it || typeof it !== \'object\') continue;',
+        '          if (typeof it.label === \'string\') {',
+        '            const t = translateText(it.label);',
+        '            if (t !== null && t !== undefined && t !== it.label) it.label = t;',
+        '          }',
+        '          if (Array.isArray(it.submenu)) trMenuItems(it.submenu, depth + 1);',
+        '        }',
+        '      }',
+        '      electron_1.ipcRenderer.invoke = function (channel) {',
+        '        try {',
+        '          if (channel === \'window:show-context-menu\' && arguments.length > 1) {',
+        '            trMenuItems(arguments[1], 0);',
+        '          }',
+        '        } catch (e) {}',
+        '        return origInvoke.apply(null, arguments);',
+        '      };',
+        '    } catch (e) {}',
+        '  })();',
+        '',
+      ].join('\n');
+      out = out.replace(anchor, hook + anchor);
+      console.log('已注入原生右键菜单翻译 hook');
+    } else {
+      console.log('未找到 hook 注入锚点，跳过右键菜单 hook');
+    }
+  } else {
+    console.log('右键菜单 hook 已存在，跳过');
+  }
+
+  fs.writeFileSync(PRELOAD, out, 'utf8');
   console.log(`\npreload.js 已写入（${dict.size} 条）`);
 
   // 强制重打补丁

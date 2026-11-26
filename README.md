@@ -14,7 +14,7 @@ Antigravity 的界面是 Electron + React，**完全没有 i18n 框架**——12
 
 社区已经有人做这件事：[yuexps/Antigravity-Hans](https://github.com/yuexps/Antigravity-Hans)（字典 2767 条）。
 
-**本项目不是另一个汉化补丁**，而是在它之上解决四个它没解决的问题：
+**本项目不是另一个汉化补丁**，而是在它之上解决五个它没解决的问题：
 
 | 问题 | 本项目 |
 |---|---|
@@ -22,8 +22,9 @@ Antigravity 的界面是 Electron + React，**完全没有 i18n 框架**——12
 | 带插值的句子全部漏译（`Shortcut Ctrl+K for Open Conversation Picker`） | 36 条 `DYNAMIC_TEMPLATES` 正则模板 + `trPart()` 片段翻译 |
 | React 把一句话拆成多个文本节点，译成半中半英 | `translateTextRun()` 合并相邻文本节点后整句查表 |
 | 模型名被误译（`Orchestrator` → 「编排器」） | `MODEL` 白名单自动还原英文 |
+| **原生右键菜单始终英文**（DOM 注入够不着 Electron 原生菜单） | preload 层 hook `ipcRenderer.invoke('window:show-context-menu')`，递归翻译 `items[].label` |
 
-最终：**3985 条字典 + 36 条模板**，界面覆盖率约 95%。
+最终：**约 4000 条字典 + 36 条模板 + 原生菜单 IPC hook**，界面覆盖率约 95%。
 
 ---
 
@@ -38,6 +39,7 @@ Antigravity 的界面是 Electron + React，**完全没有 i18n 框架**——12
 | 快捷键页 | `快捷键 Ctrl+K，用于打开对话选择器` / `移除快捷键 Ctrl+K，...` |
 | 无障碍标签 | `智能体运行位置，当前：此计算机` / `选择模型，当前：Gemini 4 Neon Medium` |
 | Token 提示 | `规则：2,885 个 token` / `技能：389 个 token` / `MCP 工具：1,666 个 token` |
+| 右键菜单（原生） | 聊天区 `复制` / 侧栏 `重命名` `固定` `标记为未读` `拆分` `归档` `删除` |
 
 模型名与品牌名**不译**（这是刻意的，不是漏译）：
 
@@ -183,6 +185,32 @@ E.createElement("p", null, "No ", V0.emptyMessagePlural, " yet")
 
 **`trPart` 与 `translateTextRun` 必须幂等**——`sync.js` 重跑会重写整个字典，但不会碰这两个函数；如果你自己改 `preload.js`，写完记得 `node --check`。
 
+### 原生右键菜单为什么单独处理
+
+右键菜单不是 DOM 渲染的，而是 Electron **原生菜单**。渲染进程这样请求它：
+
+```
+window.electronNative.showContextMenu(items)     // items = [{id,label,type,submenu...}]
+  └─ ipcRenderer.invoke('window:show-context-menu', items)   // 模板含英文 label
+       └─ 主进程 Menu.buildFromTemplate() 构建原生菜单
+```
+
+所以 DOM 层的 `walk()` / MutationObserver 完全够不着。`window.electronNative` 又是 frozen 对象（`Object.isFrozen === true`），运行时也覆盖不了它的 `showContextMenu`。
+
+`sync.js` 在 preload.js 里注入一个 hook（幂等，靠 `window:show-context-menu` 字符串判断）：
+
+```js
+const origInvoke = electron_1.ipcRenderer.invoke.bind(electron_1.ipcRenderer);
+electron_1.ipcRenderer.invoke = function (channel) {
+  if (channel === 'window:show-context-menu' && arguments.length > 1) {
+    trMenuItems(arguments[1], 0);   // 递归翻译 items[].label 与 submenu
+  }
+  return origInvoke.apply(null, arguments);
+};
+```
+
+hook 与补丁 IIFE 同处 preload 模块作用域，能直接访问 `electron_1.ipcRenderer` 和 `translateText`——这是唯一够得着原生菜单的位置。
+
 ### 不碰的区域
 
 `BYPASS_ANCESTOR_SELECTOR` 里的元素整体跳过，避免改坏代码：
@@ -214,11 +242,12 @@ node tools/check-asar.js C:\path\app.asar   # 或手动指定
 
 ```
 asar: C:\Users\...\resources\app.asar
-asar size: 7136348 | dataStart: 309056
-preload entry size: 451461 | extracted: 451461
+asar size: 7162313 | dataStart: 309056
+preload entry size: 477426 | extracted: 477278
 marker present: true
-字典条目: 3985
-动态模板: 35
+字典条目: 4019
+动态模板: 36
+原生右键 hook: true
 probe \u667a\u80fd\u4f53 -> true
 probe Hey\s+([^,]+) -> true
 probe translateTextRun -> true
@@ -285,7 +314,7 @@ settings-nav-item-Provide Feedback   -Account
 
 ```
 antigravity-zh/
-├── sync.js                  ← 主脚本：拉远程字典 + 合并 + 重打补丁
+├── sync.js                  ← 主脚本：拉远程字典 + 合并 + 注入右键 hook + 重打补丁
 ├── dict/
 │   ├── extra.json           ← 28 条：插件市场远端目录长描述
 │   ├── extra2.json          ← 68 条：快捷键命令名 + aria 片段
@@ -368,29 +397,37 @@ watcher 改的是磁盘上的 `app.asar`。已经跑起来的进程早把 preloa
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 ```
 
+**8. 右键菜单是原生菜单，DOM 注入完全无效**
+
+CDP 派发右键后，DOM 里根本不出现任何菜单节点（`[role=menu]` 只有标题栏那个），MutationObserver 也抓不到。用 Windows UI Automation 才抓到原生项（`Copy` / `Rename` / `Pin` …）。
+
+`window.electronNative` 是 frozen 对象，运行时覆盖 `showContextMenu` 也失败（`writable:false`、`configurable:false`）。唯一可行的位置是 preload 层 hook `ipcRenderer.invoke('window:show-context-menu')`——见上面「原生右键菜单为什么单独处理」一节。
+
+诊断手段：CDP 合成右键**不会触发原生菜单**（必须在真实窗口用物理鼠标事件），所以别用 CDP 验证右键，要用 UI Automation 读菜单项。
+
 ### 翻译逻辑
 
-**8. 模板顺序决定命中**
+**9. 模板顺序决定命中**
 
 `/^Open\s+(.+)$/` 排在 `/^Open\s+(.+)\s+Settings$/` 前面，后者永远不执行。`DYNAMIC_TEMPLATES` 是数组，顺序有意义。
 
-**9. React 拆句**
+**10. React 拆句**
 
 见上面 `translateTextRun` 一节。「否 automations yet」这个 bug 就是这么来的。
 
-**10. 含插值的句子不能进静态字典**
+**11. 含插值的句子不能进静态字典**
 
 `Hey {name}, what should we build today?` 里的 `{name}` 是运行时填的，静态字典永远匹配不上，必须走正则模板。
 
-**11. 插件市场的长描述不在 bundle 里**
+**12. 插件市场的长描述不在 bundle 里**
 
 `_ui_main.js`（12.21 MB）里找不到那些文案——它们是运行时从远端目录 JSON 拉下来渲染的。只能先用 CDP 抓一遍 DOM，把文案固化进 `dict/extra.json`。
 
-**12. `node -e "..."` 在 PowerShell 里会被吃引号和反斜杠**
+**13. `node -e "..."` 在 PowerShell 里会被吃引号和反斜杠**
 
 正则会变得面目全非，还容易触发 `ParserError`。一律写成 `.js` 文件再 `node file.js`。
 
-**13. `.ps1` 不带 UTF-8 BOM 会被按 GBK 解析**
+**14. `.ps1` 不带 UTF-8 BOM 会被按 GBK 解析**
 
 中文直接语法错误，报错信息还看不出根因。写 PowerShell 脚本必须：
 
@@ -400,13 +437,13 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 ### 验证手段
 
-**14. 125% DPI 缩放下坐标必须 ×1.25**
+**15. 125% DPI 缩放下坐标必须 ×1.25**
 
 主屏逻辑分辨率 2048×1152、物理 2560×1440，DPI=120。`SetCursorPos` 用的是物理像素，用逻辑坐标点会偏。
 
 更彻底的办法：**别截图，用 CDP 派发 DOM 事件**——完全绕开 DPI 和窗口焦点问题。
 
-**15. `SetForegroundWindow` 经常静默失败**
+**16. `SetForegroundWindow` 经常静默失败**
 
 单独调基本没戏，要组合：
 
@@ -419,7 +456,7 @@ SetForegroundWindow(h);
 
 即便如此也可能失败。CDP 不需要焦点，所以没有这个问题。
 
-**16. `Invoke-RestMethod` 在 PS 5.1 里按 Latin-1 解 JSON**
+**17. `Invoke-RestMethod` 在 PS 5.1 里按 Latin-1 解 JSON**
 
 Clash 的 API 返回中文全是乱码。改用：
 
